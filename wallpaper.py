@@ -4,6 +4,19 @@ import requests
 import subprocess
 import re
 import random
+import json
+
+class text_colours:
+    black = '\u001b[30m'
+    red = '\u001b[31m'
+    green = '\u001b[32m'
+    yellow = '\u001b[33m'
+    blue = '\u001b[34m'
+    magenta = '\u001b[35m'
+    cyan = '\u001b[36m'
+    white = '\u001b[37m'
+    bold = '\033[1m'
+    reset = '\u001b[0m'
 
 def config_check():
     # get current directory so we can use absolute paths
@@ -29,9 +42,11 @@ def config_parse(config_file):
         # get list of subreddits
         if "Subreddit List" in line:
             subreddit_bool = True
+
         if subreddit_bool is True:
-            subreddit = re.findall(r'"(.*?)"', line)
-            subreddit_list = subreddit_list + subreddit
+            if '#' not in line:
+                subreddit = re.findall(r'"(.*?)"', line)
+                subreddit_list = subreddit_list + subreddit
         elif "]":
             subreddit_bool = False
         
@@ -48,7 +63,7 @@ def config_parse(config_file):
             unique_per_monitor = line.split()[-1]
     
     if unique_per_monitor:
-        chosen_subs = pick_subs(subreddit_list, no_of_monitors)
+        chosen_subs = random.sample(subreddit_list, k=no_of_monitors)
     else:
         chosen_subs = random.choice(subreddit_list)
     
@@ -56,16 +71,36 @@ def config_parse(config_file):
 
 
 def get_picture_url(chosen_subs, no_of_monitors):
-    # get the link of the top picture of the week
+    # Spoof connection as Firefox in order to get back what we want
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:77.0) Gecko/20100101 Firefox/77.0'}
 
+    #chosen_subs = ["/r/ArtefactPorn"]
+
+    # get the link of the top picture of the week
     for subreddit in chosen_subs:
-        url = "https://www.reddit.com/r/%s/top/?sort=top&t=week" % subreddit
+        url = "https://old.reddit.com/%s/top/?sort=top&t=week" % subreddit
+        print("Getting HTML code from %s for sub %s" % (url, subreddit))
+        html_page = requests.get(url, headers=headers)
 
+        # 200 = web page request was successful
+        if html_page.status_code == 200:
+             # Parse HTML for Beautiful Soup
+            reddit_soup = BeautifulSoup(html_page.content, 'html.parser')
+            
+            # Get the submission title as we'll use this to search for the URL
+            top_post = reddit_soup.find('div', {"data-type": "link"})
+            top_post_title = top_post.find('a', {"class": "title"}).text
+            top_post_link = top_post["data-url"]
+            
+            print("Title: %s\nLink: %s" % (top_post_title, top_post_link))
+            
+            download_picture(top_post_link)
+        else:
+            print("Unsuccessful in getting the HTML from %s. HTTP response: %s" % (url, html_page.status_code))
+            exit(1)
 
-def pick_subs(subreddit_list, no_of_monitors):
-    chosen_subs = random.sample(subreddit_list, k=no_of_monitors)
-    return chosen_subs
+def download_picture(download_link):
+    print("Downloading from %s" % download_link)
 
 def create_config(config_file):
     print("File not found, assuming first run, creating new config file: \"%s\"" % config_file)
@@ -76,8 +111,9 @@ def create_config(config_file):
 
     # Get download directory from user
     download_path = wallpaper_directory(picture_location_root, picture_location_dir)
-    urls = ["https://www.reddit.com/r/ImaginaryNetwork/wiki/networksublist", "https://www.reddit.com/r/sfwpornnetwork/wiki/network"]
+    urls = ["https://www.reddit.com/r/ImaginaryNetwork/wiki/networksublist", "https://www.reddit.com/r/sfwpornnetwork/wiki/network", "https://old.reddit.com/user/ImaginaryMod/m/imaginaryexpanded/"]
     list_of_subreddits = get_html(urls)
+    
     monitors, different_wallpapers = numbers_monitors()
     
     # Write everything to config file
@@ -96,7 +132,7 @@ def create_config(config_file):
                 cf.write("\t\"%s\",\n" % sub)
             else:
                 cf.write("\t\"%s\"]\n" % sub)
-    print("Config file successfully written!")
+    print(text_colours.green + "Config file successfully written!" + text_colours.reset)
 
 def wallpaper_directory(picture_location_root, picture_location_dir):
     # Let's see if the default Picture folder exists
@@ -112,7 +148,9 @@ def wallpaper_directory(picture_location_root, picture_location_dir):
             picture_location_dir = input("Please enter fullpath for wallpaper storage: ")
 
             # Use backslash escaping for Python
-            picture_location_dir = picture_location_dir.replace("\\", "\\\\")
+            if picture_location_dir.count("\\") == '1':
+                picture_location_dir = picture_location_dir.replace("\\", "\\\\")
+
             print("Checking supplied location %s" % picture_location_dir)
 
             # Check directory exists
@@ -138,27 +176,50 @@ def wallpaper_directory(picture_location_root, picture_location_dir):
 def get_html(urls):
     # Spoof connection as Firefox in order to get back what we want
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:77.0) Gecko/20100101 Firefox/77.0'}
-    
+
     # list to hold URLs
     url_links = []
     
     # query both URLs
     for url in urls:
-        # get the HTML of the page
-        html_page = requests.get(url, headers=headers)
+        if "ImaginaryMod" in url:
+            # There is an 18+ check the first time we access the Expanded Imaginary site.
+            # Use cookies to set that we already verified
+            cookies_jar = requests.cookies.RequestsCookieJar()
+            cookies_jar.set('over18', '1', domain='.reddit.com', path='/')
+            html_page = requests.get(url, headers=headers, cookies=cookies_jar)
+        else:
+            # No need for cookies otherwise
+            html_page = requests.get(url, headers=headers)
+
         # 200 = web page request was successful
         if html_page.status_code == 200:
-            subreddit_links = get_links(html_page)
+            print("Getting list from %s" % url)
+            if "ImaginaryMod" in url:
+                subreddit_links = get_links(html_page, url)
+            else:
+                subreddit_links = get_links(html_page)
             url_links = url_links + subreddit_links
         else:
-            print("Unsuccessful in getting the HTML. HTTP response: %s" % html_page.status_code)
+            print(text_colours.red + "Unsuccessful in getting the HTML from %s. HTTP response: %s" % (url, html_page.status_code) + text_colours.reset)
             exit(1)
+
+    # Add in some manually that we like
+    url_links.append("/r/wallpaper")
+    url_links.append("/r/wallpapers")
+    
     return url_links
     
-def get_links(html_page):
+def get_links(html_page, url=None):
     # Convert HTML and search for all hyperlinks
     reddit_soup = BeautifulSoup(html_page.content, 'html.parser')
-    links = reddit_soup.find_all('a', href=True)
+    
+    # Expanded Imaginary page has different parsing for the list
+    if url:
+        list_of_subs = reddit_soup.find('ul', {"class": "subreddits"})
+        links = list_of_subs.find_all('a', href=True)
+    else:
+        links = reddit_soup.find_all('a', href=True)
     
     # Create list to hold links
     subreddit_links = []
@@ -167,13 +228,14 @@ def get_links(html_page):
     for l in links:
         if "/r/" in l.text:
             subreddit_links.append(l.text)
+    
     return subreddit_links
 
 def numbers_monitors():
     # I could only get this to run in a bat file. Get number of monitors
     p = subprocess.Popen("monitor.bat", stdout=subprocess.PIPE, shell=True)
-    stdout, stderr =p.communicate()
-    no_monitors = int(stdout)
+    stdout = p.communicate()
+    no_monitors = int(stdout[0])
 
     # Prompt if they want a different wallpaper on each screen
     if no_monitors > 1:
